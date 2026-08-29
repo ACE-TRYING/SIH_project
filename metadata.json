@@ -1,0 +1,6 @@
+{
+  "name": "NTRO ThermalPulse - AI Industrial Fire & Thermal Classifier",
+  "description": "Geospatial AI intelligence platform integrating NASA FIRMS thermal anomalies, OpenStreetMap industrial infrastructure, and satellite multispectral data for automated detection, classification, and monitoring of industrial fires and persistent thermal sources.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
