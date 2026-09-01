@@ -70,6 +70,7 @@ export default function App() {
   const [showAnalytics, setShowAnalytics] = useState<boolean>(false);
   const [isAnalyzingAnomaly, setIsAnalyzingAnomaly] = useState<boolean>(false);
   const [activePass, setActivePass] = useState<string>('VIIRS NOAA-20 (14:22 UTC)');
+  const [isLiveData, setIsLiveData] = useState<boolean>(false);
 
   // Filtered Anomalies
   const filteredAnomalies = useMemo(() => {
@@ -81,7 +82,7 @@ export default function App() {
       if (a.frp < filters.minFrp) return false;
 
       // Persistence
-      if (a.persistenceIndex < filters.minPersistence) return false;
+      if ((a.persistenceIndex ?? 0) < filters.minPersistence) return false;
 
       // Day / Night
       if (filters.dayNight !== 'ALL' && a.daynight !== filters.dayNight) return false;
@@ -89,7 +90,7 @@ export default function App() {
       // Search Query
       if (filters.searchQuery.trim()) {
         const query = filters.searchQuery.toLowerCase();
-        const facilityName = a.osmProximity.matchedFacilityName.toLowerCase();
+        const facilityName = (a.osmProximity?.matchedFacilityName || '').toLowerCase();
         const classification = a.classification.toLowerCase();
         const id = a.id.toLowerCase();
         const coords = `${a.latitude.toFixed(3)}, ${a.longitude.toFixed(3)}`;
@@ -168,18 +169,28 @@ export default function App() {
   };
 
   // Ingest Imported Anomalies
-  const handleImportAnomalies = (newItems: ThermalAnomaly[], mode: 'replace' | 'append') => {
+  const handleImportAnomalies = (
+    newItems: ThermalAnomaly[],
+    mode: 'replace' | 'append',
+    sourceLabel?: string,
+    isLive: boolean = false
+  ) => {
     if (mode === 'replace') {
       setAnomalies(newItems);
     } else {
       setAnomalies((prev) => [...newItems, ...prev]);
     }
+    if (sourceLabel) {
+      setActivePass(sourceLabel);
+    }
+    setIsLiveData(isLive);
   };
 
   // Inject Simulation Scenario
   const handleInjectScenario = (
     scenarioType: 'JAMNAGAR_SPIKE' | 'JHARIA_EXPANSION' | 'PUNJAB_STUBBLE_BURST' | 'ALL_ROUTINE'
   ) => {
+    setIsLiveData(false);
     if (scenarioType === 'JAMNAGAR_SPIKE') {
       setActivePass('VIIRS NOAA-20 (NIGHT PASS + SPIKE)');
       setAnomalies((prev) =>
@@ -235,6 +246,7 @@ export default function App() {
         onToggleAnalytics={() => setShowAnalytics(!showAnalytics)}
         showAnalytics={showAnalytics}
         activePass={activePass}
+        isLiveData={isLiveData}
       />
 
       {/* Main Workspace (Sidebar + GIS Map) */}

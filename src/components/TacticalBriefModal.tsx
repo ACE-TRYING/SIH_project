@@ -26,6 +26,7 @@ export const TacticalBriefModal: React.FC<TacticalBriefModalProps> = ({
   onClose,
 }) => {
   const [briefText, setBriefText] = useState<string>('');
+  const [briefSource, setBriefSource] = useState<'gemini' | 'fallback' | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
@@ -55,6 +56,7 @@ export const TacticalBriefModal: React.FC<TacticalBriefModalProps> = ({
 
       const data = await response.json();
       setBriefText(data.brief);
+      setBriefSource(data.source === 'gemini' && !data.simulated ? 'gemini' : 'fallback');
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Error communicating with Gemini intelligence engine.');
@@ -100,10 +102,19 @@ export const TacticalBriefModal: React.FC<TacticalBriefModalProps> = ({
               <ShieldAlert className="w-4 h-4" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/40 font-bold">
                   RESTRICTED // NTRO DISASTER MANAGEMENT
                 </span>
+                {briefSource && (
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border font-bold ${
+                    briefSource === 'gemini'
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}>
+                    {briefSource === 'gemini' ? '● REAL — Gemini SITREP' : '● FALLBACK — Heuristic Brief'}
+                  </span>
+                )}
                 <span className="text-xs text-slate-400 font-mono">
                   {new Date().toUTCString()}
                 </span>

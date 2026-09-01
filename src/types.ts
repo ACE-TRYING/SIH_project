@@ -17,6 +17,8 @@ export type FacilityType =
   | 'LNG_TERMINAL'
   | 'COAL_MINE'
   | 'CHEMICAL'
+  | 'STORAGE_TANK'
+  | 'QUARRY'
   | 'NONE';
 
 export interface ThermalAnomaly {
@@ -37,41 +39,43 @@ export interface ThermalAnomaly {
   
   // AI & Geospatial Fusion Attributes
   classification: FireClassification;
-  confidenceScore: number; // 0-100
-  persistenceIndex: number; // 0.0 - 1.0 (recurrence over past 90 days)
-  historicalDetectionsCount: number;
-  anomalyStatus: 'NORMAL_ROUTINE' | 'ELEVATED_FLARE' | 'ACCIDENTAL_SPIKE_FIRE' | 'SUB_SURFACE_SMOLDERING' | 'ACTIVE_SPREADING';
+  confidenceScore: number; // 0-100 heuristic evidence score
+  classificationReason?: string;
+  evidence?: string[];
+  persistenceIndex?: number; // 0.0 - 1.0 (recurrence over past 90 days)
+  historicalDetectionsCount?: number;
+  anomalyStatus?: 'NORMAL_ROUTINE' | 'ELEVATED_FLARE' | 'ACCIDENTAL_SPIKE_FIRE' | 'SUB_SURFACE_SMOLDERING' | 'ACTIVE_SPREADING';
   hazardLevel: HazardLevel;
   
-  osmProximity: {
+  osmProximity?: {
     matchedFacilityName: string;
     facilityType: FacilityType;
     distanceMeters: number;
     osmId: string;
     operator?: string;
     tags: Record<string, string>;
-  };
+  } | null;
 
-  landCover: {
-    type: 'INDUSTRIAL_BUILTUP' | 'DENSE_FOREST' | 'CROPLAND' | 'SHRUBLAND' | 'MINING_SURFACE' | 'WATER_COASTAL';
-    corineCode: number;
+  landCover?: {
+    type: 'INDUSTRIAL_BUILTUP' | 'DENSE_FOREST' | 'CROPLAND' | 'SHRUBLAND' | 'MINING_SURFACE' | 'WATER_COASTAL' | 'UNKNOWN';
+    corineCode?: number;
     description: string;
-  };
+  } | null;
 
-  multispectral: {
-    swirRatio_B12_B11: number;
-    nbr: number; // Normalized Burn Ratio
-    ndvi: number; // Normalized Difference Vegetation Index
+  multispectral?: {
+    swirRatio_B12_B11?: number;
+    nbr?: number; // Normalized Burn Ratio
+    ndvi?: number; // Normalized Difference Vegetation Index
     estimatedTempCelsius: number;
-  };
+  } | null;
 
-  plumeDispersion: {
+  plumeDispersion?: {
     windSpeedKmH: number;
     windDirectionDeg: number;
     estimatedPlumeLengthKm: number;
-    toxicGasRisk: 'SO2_HIGH' | 'VOC_ELEVATED' | 'PM2.5_EXTREME' | 'NORMAL_COMBUSTION';
+    toxicGasRisk: 'SO2_HIGH' | 'VOC_ELEVATED' | 'PM2.5_EXTREME' | 'NORMAL_COMBUSTION' | 'UNAVAILABLE';
     evacuationRadiusKm: number;
-  };
+  } | null;
 
   temporalHistory?: Array<{
     date: string;
@@ -87,7 +91,21 @@ export interface ThermalAnomaly {
     riskSummary: string;
     containmentProtocol: string;
     generatedAt: string;
+    source?: 'gemini' | 'fallback';
+    simulated?: boolean;
+    model?: string;
   };
+
+  // Phase 6: Real weather/wind from Open-Meteo (server-side proxy)
+  // status='REAL'      → all measurement fields are present and real
+  // status='UNAVAILABLE'/'ERROR' → measurement fields are absent (undefined)
+  weather?: {
+    source: 'OPEN_METEO';
+    windSpeedKmh?: number;
+    windDirectionDeg?: number;
+    observedAt?: string; // ISO timestamp from Open-Meteo
+    status: 'REAL' | 'UNAVAILABLE' | 'ERROR';
+  } | null;
 }
 
 export interface IndustrialFacility {

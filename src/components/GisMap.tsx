@@ -245,18 +245,18 @@ export const GisMap: React.FC<GisMapProps> = ({
           </div>
 
           <div class="font-bold text-sm text-slate-950 mb-1 leading-tight">
-            ${anomaly.osmProximity.matchedFacilityName}
+            ${anomaly.osmProximity?.matchedFacilityName || 'Unenriched Detection'}
           </div>
 
           <div class="grid grid-cols-2 gap-1.5 my-2 bg-slate-100 p-2 rounded border border-slate-200 font-mono text-[11px]">
             <div><strong>FRP:</strong> <span class="text-rose-600 font-bold">${anomaly.frp} MW</span></div>
             <div><strong>Brightness:</strong> ${anomaly.brightness} K</div>
-            <div><strong>Persistence:</strong> ${(anomaly.persistenceIndex * 100).toFixed(0)}% (${anomaly.historicalDetectionsCount}x)</div>
+            <div><strong>Persistence:</strong> ${anomaly.persistenceIndex && anomaly.persistenceIndex > 0 ? `${(anomaly.persistenceIndex * 100).toFixed(0)}%` : 'Unavailable'}</div>
             <div><strong>Hazard:</strong> <span class="font-bold ${isCritical ? 'text-red-600' : 'text-slate-800'}">${anomaly.hazardLevel}</span></div>
           </div>
 
           <div class="text-[11px] text-slate-600 mb-2">
-            <div><strong>Land Cover:</strong> ${anomaly.landCover.type}</div>
+            <div><strong>Land Cover:</strong> ${anomaly.landCover?.type || 'UNKNOWN'}</div>
             <div><strong>Acquired:</strong> ${anomaly.acq_date} ${anomaly.acq_time} UTC (${anomaly.daynight === 'D' ? 'Day' : 'Night'})</div>
           </div>
 
@@ -278,7 +278,7 @@ export const GisMap: React.FC<GisMapProps> = ({
       anomalyMarkersLayerRef.current?.addLayer(marker);
 
       // Render Gaussian smoke plume dispersion polygon if enabled
-      if (layerControls.showPlumes && anomaly.plumeDispersion.estimatedPlumeLengthKm > 0.5) {
+      if (layerControls.showPlumes && (anomaly.plumeDispersion?.estimatedPlumeLengthKm || 0) > 0.5) {
         const plumeCoords = generatePlumeCone(
           anomaly.latitude,
           anomaly.longitude,
@@ -303,6 +303,21 @@ export const GisMap: React.FC<GisMapProps> = ({
       }
     });
   }, [anomalies, selectedAnomaly, layerControls.showPlumes]);
+
+  // Auto-fit bounds when anomaly dataset updates
+  useEffect(() => {
+    if (!mapInstanceRef.current || anomalies.length === 0) return;
+    const validCoords = anomalies
+      .filter((a) => !isNaN(a.latitude) && !isNaN(a.longitude))
+      .map((a) => [a.latitude, a.longitude] as [number, number]);
+
+    if (validCoords.length > 0) {
+      const bounds = L.latLngBounds(validCoords);
+      if (bounds.isValid()) {
+        mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+      }
+    }
+  }, [anomalies]);
 
   // Pan to selected anomaly or facility
   useEffect(() => {

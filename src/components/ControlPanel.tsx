@@ -282,7 +282,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   </div>
 
                   <div className="font-semibold text-xs text-slate-100 mb-1 leading-snug line-clamp-1">
-                    {anomaly.osmProximity.matchedFacilityName}
+                    {anomaly.osmProximity?.matchedFacilityName || 'Unenriched Thermal Detection'}
                   </div>
 
                   <div className="grid grid-cols-3 gap-1 font-mono text-[10px] text-slate-400 bg-slate-900/80 p-1.5 rounded border border-slate-800/80">
@@ -296,7 +296,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     </div>
                     <div>
                       <span>Persist: </span>
-                      <strong className="text-cyan-300">{(anomaly.persistenceIndex * 100).toFixed(0)}%</strong>
+                      <strong className="text-cyan-300">
+                        {anomaly.persistenceIndex && anomaly.persistenceIndex > 0 ? `${(anomaly.persistenceIndex * 100).toFixed(0)}%` : 'Unavailable'}
+                      </strong>
                     </div>
                   </div>
 

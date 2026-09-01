@@ -57,94 +57,254 @@ export function generatePlumeCone(
   return [ptOrigin, ptLeft, ptCenter, ptRight, ptOrigin];
 }
 
-// Rule-based classification engine matching multi-sensor parameters
-export function classifyThermalAnomaly(params: {
-  frp: number;
-  brightnessK: number;
-  persistenceIndex: number;
-  osmFacilityType: FacilityType;
-  osmDistanceMeters: number;
-  landCoverType: string;
-  swirRatio: number;
-  baselineFrp?: number;
-}): {
+export interface ClassificationResult {
   classification: FireClassification;
-  confidenceScore: number;
+  confidenceScore: number; // 0-100 heuristic evidence score (NOT a probability)
   hazardLevel: HazardLevel;
   anomalyStatus: ThermalAnomaly['anomalyStatus'];
-} {
-  const { frp, brightnessK, persistenceIndex, osmFacilityType, osmDistanceMeters, landCoverType, swirRatio, baselineFrp = 30 } = params;
+  classificationReason: string;
+  evidence: string[];
+}
 
-  // 1. Industrial proximity check (< 800m to known industrial installation)
-  const isNearIndustrial = osmDistanceMeters <= 1000 && osmFacilityType !== 'NONE';
+// Evidence-based rule-based heuristic classification engine
+export function classifyThermalAnomaly(params: {
+  frp?: number;
+  brightness?: number;
+  brightnessK?: number;
+  brightness31K?: number;
+  confidence?: string | number;
+  satellite?: string;
+  persistenceIndex?: number;
+  historicalDetectionsCount?: number;
+  osmFacilityType?: FacilityType;
+  osmFacilityName?: string;
+  osmDistanceMeters?: number;
+  osmTags?: Record<string, string>;
+  landCoverType?: string;
+  swirRatio?: number;
+}): ClassificationResult {
+  const frp = Number(params.frp ?? 0);
+  const brightnessK = Number(params.brightnessK ?? params.brightness ?? 0);
+  const {
+    confidence = 'nominal',
+    persistenceIndex,
+    osmFacilityType = 'NONE',
+    osmFacilityName,
+    osmDistanceMeters = -1,
+    osmTags = {},
+    landCoverType = 'UNKNOWN',
+  } = params;
 
-  if (isNearIndustrial) {
-    if (osmFacilityType === 'COAL_MINE' || landCoverType === 'MINING_SURFACE') {
-      return {
-        classification: 'COAL_MINING_FIRE',
-        confidenceScore: 97.5,
-        hazardLevel: frp > 70 ? 'HIGH' : 'MODERATE',
-        anomalyStatus: 'SUB_SURFACE_SMOLDERING',
-      };
+  const evidence: string[] = [];
+
+  // 1. Transparent Heuristic Evidence Scoring (Conservative 0-100 scale)
+  let heuristicScore = 20; // Base presence points
+
+  // FIRMS Detection Confidence
+  if (confidence === 'high') {
+    heuristicScore += 25;
+    evidence.push('FIRMS detection confidence: HIGH');
+  } else if (confidence === 'nominal') {
+    heuristicScore += 15;
+    evidence.push('FIRMS detection confidence: NOMINAL');
+  } else if (confidence === 'low') {
+    heuristicScore += 5;
+    evidence.push('FIRMS detection confidence: LOW');
+  } else if (typeof confidence === 'number') {
+    const pts = Math.round((Math.min(100, Math.max(0, confidence)) / 100) * 25);
+    heuristicScore += pts;
+    evidence.push(`FIRMS confidence: ${confidence}%`);
+  }
+
+  // FIRMS Thermal Radiative Power (FRP)
+  if (frp > 100) {
+    heuristicScore += 20;
+    evidence.push(`Strong thermal radiative power: ${frp.toFixed(1)} MW FRP`);
+  } else if (frp > 35) {
+    heuristicScore += 15;
+    evidence.push(`Moderate thermal radiative power: ${frp.toFixed(1)} MW FRP`);
+  } else if (frp > 0) {
+    heuristicScore += 8;
+    evidence.push(`Low thermal radiative power: ${frp.toFixed(1)} MW FRP`);
+  }
+
+  // FIRMS Brightness Temperature
+  if (brightnessK > 350) {
+    heuristicScore += 10;
+    evidence.push(`High brightness temperature: ${brightnessK.toFixed(1)} K`);
+  } else if (brightnessK > 320) {
+    heuristicScore += 5;
+    evidence.push(`Brightness temperature: ${brightnessK.toFixed(1)} K`);
+  }
+
+  // 2. Evaluate Real OpenStreetMap (OSM) Evidence
+  const hasOsmCandidate = osmDistanceMeters >= 0 && osmDistanceMeters <= 5000 && osmFacilityType !== 'NONE';
+  const isCloseProximity = osmDistanceMeters >= 0 && osmDistanceMeters <= 3000;
+  const isVeryCloseProximity = osmDistanceMeters >= 0 && osmDistanceMeters <= 1200;
+
+  if (hasOsmCandidate) {
+    const distKm = (osmDistanceMeters / 1000).toFixed(2);
+    const facilityLabel = osmFacilityName && osmFacilityName !== 'Unnamed OSM facility' ? `"${osmFacilityName}"` : 'OSM mapped facility';
+    evidence.push(`OSM proximity: ${facilityLabel} (${osmFacilityType}) at ${distKm} km`);
+
+    if (isVeryCloseProximity) {
+      heuristicScore += 20;
+    } else if (isCloseProximity) {
+      heuristicScore += 10;
     }
 
-    if (osmFacilityType === 'THERMAL_POWER') {
+    // A. POWER PLANT THERMAL
+    if (osmFacilityType === 'THERMAL_POWER' && isCloseProximity) {
+      heuristicScore += 10;
+      const finalScore = Math.min(85, Math.max(35, heuristicScore));
       return {
         classification: 'POWER_PLANT_THERMAL',
-        confidenceScore: 93.0,
-        hazardLevel: 'LOW',
+        confidenceScore: finalScore,
+        hazardLevel: frp > 120 ? 'HIGH' : 'LOW',
         anomalyStatus: 'NORMAL_ROUTINE',
+        classificationReason: `Thermal anomaly located ${distKm} km from an OSM-mapped power generation facility (${facilityLabel}).`,
+        evidence,
       };
     }
 
-    // Distinguish routine flare vs accidental fire / catastrophic spike
-    const isMajorSpike = frp > baselineFrp * 2.5 || (frp > 100 && swirRatio > 2.8);
-    if (isMajorSpike) {
+    // B. COAL MINING FIRE (Strictly requires explicit coal evidence)
+    const hasExplicitCoalEvidence =
+      osmFacilityType === 'COAL_MINE' ||
+      osmTags.resource === 'coal' ||
+      (osmTags.substance || '').toLowerCase().includes('coal') ||
+      (osmFacilityName || '').toLowerCase().includes('coal') ||
+      (osmFacilityName || '').toLowerCase().includes('colliery');
+
+    if (hasExplicitCoalEvidence && isCloseProximity) {
+      heuristicScore += 10;
+      const finalScore = Math.min(85, Math.max(35, heuristicScore));
       return {
-        classification: 'INDUSTRIAL_FIRE',
-        confidenceScore: 95.0,
-        hazardLevel: 'CRITICAL',
-        anomalyStatus: 'ACCIDENTAL_SPIKE_FIRE',
+        classification: 'COAL_MINING_FIRE',
+        confidenceScore: finalScore,
+        hazardLevel: frp > 70 ? 'HIGH' : 'MODERATE',
+        anomalyStatus: 'SUB_SURFACE_SMOLDERING',
+        classificationReason: `Thermal anomaly co-located ${distKm} km from a documented coal mining site (${facilityLabel}) with verified coal resource tags.`,
+        evidence,
       };
     }
 
-    if (persistenceIndex > 0.4 || swirRatio > 1.6) {
+    // C. PERSISTENT GAS FLARE (Requires actual non-null persistence evidence)
+    const hasRealPersistence = persistenceIndex !== undefined && persistenceIndex !== null && persistenceIndex > 0.4;
+    const isFlareCompatibleFacility =
+      osmFacilityType === 'OIL_REFINERY' ||
+      osmFacilityType === 'PETROCHEMICAL' ||
+      osmFacilityType === 'LNG_TERMINAL';
+
+    if (hasRealPersistence && isFlareCompatibleFacility && isCloseProximity) {
+      heuristicScore += 10;
+      evidence.push(`90-day temporal persistence: ${(persistenceIndex * 100).toFixed(0)}%`);
+      const finalScore = Math.min(85, Math.max(35, heuristicScore));
       return {
         classification: 'PERSISTENT_GAS_FLARE',
-        confidenceScore: 98.0,
-        hazardLevel: frp > 60 ? 'MODERATE' : 'LOW',
-        anomalyStatus: frp > 50 ? 'ELEVATED_FLARE' : 'NORMAL_ROUTINE',
+        confidenceScore: finalScore,
+        hazardLevel: frp > 80 ? 'MODERATE' : 'LOW',
+        anomalyStatus: frp > 60 ? 'ELEVATED_FLARE' : 'NORMAL_ROUTINE',
+        classificationReason: `High multi-temporal persistence (${(persistenceIndex * 100).toFixed(0)}%) co-located ${distKm} km from verified refinery/petrochemical infrastructure (${facilityLabel}).`,
+        evidence,
+      };
+    }
+
+    // D. INDUSTRIAL FIRE (Major thermal event near genuine industrial facility)
+    const isGenuineIndustrialFacility =
+      osmFacilityType === 'OIL_REFINERY' ||
+      osmFacilityType === 'PETROCHEMICAL' ||
+      osmFacilityType === 'STEEL_PLANT' ||
+      osmFacilityType === 'CHEMICAL' ||
+      osmFacilityType === 'LNG_TERMINAL';
+
+    if (isGenuineIndustrialFacility && isCloseProximity && (frp > 40 || brightnessK > 335)) {
+      heuristicScore += 10;
+      const finalScore = Math.min(85, Math.max(35, heuristicScore));
+      return {
+        classification: 'INDUSTRIAL_FIRE',
+        confidenceScore: finalScore,
+        hazardLevel: frp > 120 ? 'CRITICAL' : 'HIGH',
+        anomalyStatus: 'ACCIDENTAL_SPIKE_FIRE',
+        classificationReason: `Elevated thermal intensity (${frp.toFixed(1)} MW) situated ${distKm} km from an industrial installation (${facilityLabel}).`,
+        evidence,
       };
     }
   }
 
-  // 2. Agricultural Stubble Burning
-  if (landCoverType === 'CROPLAND' && persistenceIndex < 0.15) {
-    return {
-      classification: 'AGRICULTURAL_STUBBLE',
-      confidenceScore: 96.5,
-      hazardLevel: frp > 80 ? 'HIGH' : 'MODERATE',
-      anomalyStatus: 'ACTIVE_SPREADING',
-    };
+  // 3. Evaluate Real Land Cover Evidence (Only if non-UNKNOWN and verified)
+  const hasRealLandCover = landCoverType !== 'UNKNOWN' && landCoverType !== '';
+  if (hasRealLandCover) {
+    evidence.push(`Land cover classification: ${landCoverType}`);
+
+    if (landCoverType === 'CROPLAND') {
+      heuristicScore += 10;
+      const finalScore = Math.min(80, Math.max(35, heuristicScore));
+      return {
+        classification: 'AGRICULTURAL_STUBBLE',
+        confidenceScore: finalScore,
+        hazardLevel: frp > 80 ? 'HIGH' : 'MODERATE',
+        anomalyStatus: 'ACTIVE_SPREADING',
+        classificationReason: `Thermal anomaly positioned on verified agricultural cropland without adjacent industrial infrastructure.`,
+        evidence,
+      };
+    }
+
+    if (landCoverType === 'DENSE_FOREST' || landCoverType === 'SHRUBLAND') {
+      heuristicScore += 10;
+      const finalScore = Math.min(80, Math.max(35, heuristicScore));
+      return {
+        classification: 'FOREST_WILDFIRE',
+        confidenceScore: finalScore,
+        hazardLevel: frp > 100 ? 'CRITICAL' : 'HIGH',
+        anomalyStatus: 'ACTIVE_SPREADING',
+        classificationReason: `Thermal detection situated in woodland/shrubland land-cover zone without industrial association.`,
+        evidence,
+      };
+    }
   }
 
-  // 3. Forest Wildfire
-  if ((landCoverType === 'DENSE_FOREST' || landCoverType === 'SHRUBLAND') && persistenceIndex < 0.15) {
-    return {
-      classification: 'FOREST_WILDFIRE',
-      confidenceScore: 98.8,
-      hazardLevel: frp > 100 ? 'CRITICAL' : 'HIGH',
-      anomalyStatus: 'ACTIVE_SPREADING',
-    };
+  // 4. Conservative Fallback: URBAN_OTHER
+  // For un-enriched FIRMS anomalies, generic storage tanks, generic quarries without coal tags, or isolated detections
+  const isHighThermalIntensity = frp > 100 || brightnessK > 360;
+  const isModerateThermalIntensity = frp > 40 || brightnessK > 335;
+  const finalScore = Math.min(75, Math.max(30, heuristicScore));
+
+  let reason = `FIRMS thermal detection (${frp.toFixed(1)} MW, ${brightnessK.toFixed(1)} K). Contextual evidence is insufficient to confirm a specific industrial/wildfire class.`;
+  if (osmFacilityType === 'STORAGE_TANK') {
+    reason = `Thermal signal located near an OSM storage tank without specific petroleum/gas tags. Classified conservatively as URBAN_OTHER.`;
+  } else if (osmFacilityType === 'QUARRY') {
+    reason = `Thermal signal near an OSM quarry without verified coal resource tags. Classified conservatively as URBAN_OTHER.`;
   }
 
-  // 4. Fallback / Urban
   return {
     classification: 'URBAN_OTHER',
-    confidenceScore: 78.0,
-    hazardLevel: 'LOW',
+    confidenceScore: finalScore,
+    hazardLevel: isHighThermalIntensity ? 'HIGH' : isModerateThermalIntensity ? 'MODERATE' : 'LOW',
     anomalyStatus: 'NORMAL_ROUTINE',
+    classificationReason: reason,
+    evidence,
   };
+}
+
+// Splits a single CSV line accounting for quotes
+export function splitCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim().replace(/^"(.*)"$/, '$1'));
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim().replace(/^"(.*)"$/, '$1'));
+  return result;
 }
 
 // Convert FIRMS raw CSV line to parsed anomaly object
@@ -152,22 +312,30 @@ export function parseFirmsCsvRow(row: Record<string, string>, index: number): Th
   try {
     const lat = parseFloat(row.latitude || row.lat);
     const lon = parseFloat(row.longitude || row.lon || row.long);
-    const brightness = parseFloat(row.bright_ti4 || row.brightness || row.bright_t31 || '330');
-    const brightness31 = parseFloat(row.bright_ti5 || row.bright_t31 || '295');
-    const frp = parseFloat(row.frp || '25');
-    const acqDate = row.acq_date || new Date().toISOString().split('T')[0];
-    const acqTime = row.acq_time || '12:00';
-    const satelliteRaw = (row.satellite || 'VIIRS_NOAA20').toUpperCase();
-    const daynight = (row.daynight || 'N').toUpperCase() as 'D' | 'N';
-    const confidenceRaw = row.confidence || 'nominal';
+
+    // If coordinates are invalid, return null to safely ignore row
+    if (isNaN(lat) || isNaN(lon)) return null;
+
+    const brightness = parseFloat(row.bright_ti4 || row.brightness || row.bright_t31 || '0');
+    const brightness31 = parseFloat(row.bright_ti5 || row.bright_t31 || '0');
+    const frp = parseFloat(row.frp || '0');
+    const acqDate = row.acq_date || row.acqdate || new Date().toISOString().split('T')[0];
+    const acqTime = row.acq_time || row.acqtime || '00:00';
+    const satelliteRaw = (row.satellite || row.instrument || 'VIIRS_NOAA20').toUpperCase();
+    const daynightRaw = (row.daynight || 'N').toUpperCase();
+    const daynight: 'D' | 'N' = daynightRaw.startsWith('D') ? 'D' : 'N';
+
+    const confidenceRaw = (row.confidence || 'nominal').toLowerCase();
     let confidence: 'low' | 'nominal' | 'high' | number = 'nominal';
-    if (confidenceRaw === 'low' || confidenceRaw === 'nominal' || confidenceRaw === 'high') {
-      confidence = confidenceRaw;
+    if (confidenceRaw === 'low' || confidenceRaw === 'l') {
+      confidence = 'low';
+    } else if (confidenceRaw === 'nominal' || confidenceRaw === 'n') {
+      confidence = 'nominal';
+    } else if (confidenceRaw === 'high' || confidenceRaw === 'h') {
+      confidence = 'high';
     } else if (!isNaN(Number(confidenceRaw))) {
       confidence = Number(confidenceRaw);
     }
-
-    if (isNaN(lat) || isNaN(lon)) return null;
 
     let satellite: ThermalAnomaly['satellite'] = 'VIIRS_NOAA20';
     if (satelliteRaw.includes('SNPP') || satelliteRaw.includes('NPP')) satellite = 'VIIRS_SNPP';
@@ -175,24 +343,21 @@ export function parseFirmsCsvRow(row: Record<string, string>, index: number): Th
     else if (satelliteRaw.includes('TERRA') || satelliteRaw.includes('T')) satellite = 'MODIS_Terra';
     else if (satelliteRaw.includes('AQUA') || satelliteRaw.includes('A')) satellite = 'MODIS_Aqua';
 
-    // Rule heuristics for generic raw input
-    const isSyntheticHigh = brightness > 370 || frp > 120;
+    // Classification strictly using real available FIRMS measurements
     const classified = classifyThermalAnomaly({
       frp,
       brightnessK: brightness,
-      persistenceIndex: isSyntheticHigh ? 0.75 : 0.2,
-      osmFacilityType: isSyntheticHigh ? 'OIL_REFINERY' : 'NONE',
-      osmDistanceMeters: isSyntheticHigh ? 120 : 5000,
-      landCoverType: isSyntheticHigh ? 'INDUSTRIAL_BUILTUP' : 'CROPLAND',
-      swirRatio: isSyntheticHigh ? 2.5 : 1.2,
+      brightness31K: brightness31 > 0 ? brightness31 : undefined,
+      confidence,
+      satellite,
     });
 
     return {
-      id: `firms-imported-${Date.now()}-${index}`,
+      id: `firms-live-${Date.now()}-${index}`,
       latitude: lat,
       longitude: lon,
       brightness,
-      brightness_31: brightness31,
+      brightness_31: brightness31 > 0 ? brightness31 : undefined,
       scan: parseFloat(row.scan || '0.4'),
       track: parseFloat(row.track || '0.4'),
       acq_date: acqDate,
@@ -204,38 +369,25 @@ export function parseFirmsCsvRow(row: Record<string, string>, index: number): Th
       daynight,
       classification: classified.classification,
       confidenceScore: classified.confidenceScore,
-      persistenceIndex: isSyntheticHigh ? 0.82 : 0.05,
-      historicalDetectionsCount: isSyntheticHigh ? 35 : 2,
+      classificationReason: classified.classificationReason,
+      evidence: classified.evidence,
+      persistenceIndex: undefined,
+      historicalDetectionsCount: undefined,
       anomalyStatus: classified.anomalyStatus,
       hazardLevel: classified.hazardLevel,
-      osmProximity: {
-        matchedFacilityName: isSyntheticHigh ? 'Identified Industrial Installation' : 'Open Field',
-        facilityType: isSyntheticHigh ? 'OIL_REFINERY' : 'NONE',
-        distanceMeters: isSyntheticHigh ? 120 : 4500,
-        osmId: `import/${index}`,
-        tags: {},
-      },
-      landCover: {
-        type: isSyntheticHigh ? 'INDUSTRIAL_BUILTUP' : 'CROPLAND',
-        corineCode: isSyntheticHigh ? 121 : 211,
-        description: isSyntheticHigh ? 'Industrial Fabric' : 'Agricultural Land',
-      },
+      // Contextual fields are unavailable until real external data lookup (Phase 4 OpenStreetMap)
+      osmProximity: undefined,
+      landCover: undefined,
       multispectral: {
-        swirRatio_B12_B11: isSyntheticHigh ? 2.6 : 1.15,
-        nbr: isSyntheticHigh ? -0.25 : -0.6,
-        ndvi: isSyntheticHigh ? 0.03 : 0.45,
-        estimatedTempCelsius: Math.round(brightness - 273.15 + (frp * 2.5)),
+        swirRatio_B12_B11: undefined,
+        nbr: undefined,
+        ndvi: undefined,
+        estimatedTempCelsius: brightness > 0 ? Math.round(brightness - 273.15) : 0,
       },
-      plumeDispersion: {
-        windSpeedKmH: 16,
-        windDirectionDeg: 60,
-        estimatedPlumeLengthKm: Math.min(15, Math.max(1, frp * 0.06)),
-        toxicGasRisk: isSyntheticHigh ? 'SO2_HIGH' : 'NORMAL_COMBUSTION',
-        evacuationRadiusKm: isSyntheticHigh ? 2.0 : 0.0,
-      },
+      plumeDispersion: undefined,
     };
   } catch (err) {
-    console.error('Error parsing row:', err);
+    console.error('Error parsing FIRMS row:', err);
     return null;
   }
 }

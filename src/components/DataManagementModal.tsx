@@ -13,11 +13,11 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { ThermalAnomaly } from '../types';
-import { parseFirmsCsvRow } from '../utils/geoUtils';
+import { parseFirmsCsvRow, splitCsvLine } from '../utils/geoUtils';
 
 interface DataManagementModalProps {
   anomalies: ThermalAnomaly[];
-  onImportAnomalies: (newAnomalies: ThermalAnomaly[], mode: 'replace' | 'append') => void;
+  onImportAnomalies: (newAnomalies: ThermalAnomaly[], mode: 'replace' | 'append', sourceLabel?: string, isLive?: boolean) => void;
   onClose: () => void;
 }
 
@@ -31,9 +31,81 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
   const [countryCode, setCountryCode] = useState<string>('IND');
   const [dayRange, setDayRange] = useState<number>(1);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   // Live NASA FIRMS API Query
+  const enrichWithOsm = async (anomalies: ThermalAnomaly[]): Promise<ThermalAnomaly[]> => {
+    if (!anomalies || anomalies.length === 0) return [];
+    try {
+      const res = await fetch('/api/osm/enrich-anomalies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anomalies, maxEnrich: 15 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.anomalies)) {
+          return data.anomalies;
+        }
+      }
+    } catch (e) {
+      console.warn('[OSM Enrichment] Client fetch error:', e);
+    }
+    return anomalies;
+  };
+
+  // Phase 6: Real weather enrichment via server-side Open-Meteo proxy
+  // Only called for LIVE FIRMS anomalies — never for mock/demo data
+  // Never fabricates values; marks status as UNAVAILABLE on any failure
+  const enrichWithWeather = async (anomalies: ThermalAnomaly[]): Promise<ThermalAnomaly[]> => {
+    if (!anomalies || anomalies.length === 0) return anomalies;
+
+    // Rank by FRP descending, cap at 15
+    const ranked = [...anomalies]
+      .map((a, idx) => ({ idx, frp: Number(a.frp || 0) }))
+      .sort((a, b) => b.frp - a.frp)
+      .slice(0, 15)
+      .map((item) => item.idx);
+
+    const result = [...anomalies];
+
+    for (const idx of ranked) {
+      const a = result[idx];
+      try {
+        const res = await fetch('/api/weather/current', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latitude: a.latitude, longitude: a.longitude }),
+        });
+        const data = await res.json();
+        if (data.success && data.status === 'REAL') {
+          result[idx] = {
+            ...a,
+            weather: {
+              source: 'OPEN_METEO',
+              windSpeedKmh: data.windSpeedKmh,
+              windDirectionDeg: data.windDirectionDeg,
+              observedAt: data.observedAt,
+              status: 'REAL',
+            },
+          };
+        } else {
+          result[idx] = {
+            ...a,
+            weather: { source: 'OPEN_METEO', status: 'UNAVAILABLE' },
+          };
+        }
+      } catch {
+        result[idx] = {
+          ...a,
+          weather: { source: 'OPEN_METEO', status: 'UNAVAILABLE' },
+        };
+      }
+    }
+
+    return result;
+  };
+
   const handleFetchFirmsLive = async () => {
     if (!apiKey.trim()) {
       setStatusMessage({
@@ -44,7 +116,7 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
     }
 
     setIsLoading(true);
-    setStatusMessage(null);
+    setStatusMessage({ type: 'info', text: 'Executing live query to NASA FIRMS API...' });
 
     try {
       const res = await fetch('/api/firms/fetch-live', {
@@ -53,30 +125,35 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
         body: JSON.stringify({
           apiKey: apiKey.trim(),
           source,
-          countryCode,
+          countryCode: countryCode.trim().toUpperCase(),
           dayRange,
         }),
       });
 
-      if (!res.ok) {
-        const data = await res.json();
+      const data = await res.json();
+      if (!res.ok || data.success === false) {
         throw new Error(data.error || 'Failed to query NASA FIRMS API.');
       }
 
-      const data = await res.json();
       const rawCsv = data.rawCsv as string;
 
-      // Parse CSV
-      const lines = rawCsv.split('\n').filter((l) => l.trim().length > 0);
+      // Parse CSV cleanly using regex line split and splitCsvLine
+      const lines = rawCsv.split(/\r?\n/).filter((l) => l.trim().length > 0);
       if (lines.length <= 1) {
-        throw new Error('NASA FIRMS returned no active thermal fire records for this query window.');
+        // Zero detections: Clear previous detections without falling back to mock data
+        onImportAnomalies([], 'replace', `NASA FIRMS LIVE (${countryCode} - 0 detections)`, true);
+        setStatusMessage({
+          type: 'info',
+          text: `NASA FIRMS LIVE DATA: 0 detections returned for ${countryCode} (${dayRange}d).`,
+        });
+        return;
       }
 
-      const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
+      const headers = splitCsvLine(lines[0]).map((h) => h.toLowerCase());
       const parsedAnomalies: ThermalAnomaly[] = [];
 
       for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].split(',').map((v) => v.trim());
+        const values = splitCsvLine(lines[i]);
         const rowObj: Record<string, string> = {};
         headers.forEach((h, idx) => {
           rowObj[h] = values[idx] || '';
@@ -89,19 +166,38 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
       }
 
       if (parsedAnomalies.length === 0) {
-        throw new Error('Unable to parse valid coordinates from NASA FIRMS CSV payload.');
+        onImportAnomalies([], 'replace', `NASA FIRMS LIVE (${countryCode} - 0 valid records)`, true);
+        setStatusMessage({
+          type: 'info',
+          text: `NASA FIRMS LIVE DATA: 0 parseable detections returned for ${countryCode}.`,
+        });
+        return;
       }
 
-      onImportAnomalies(parsedAnomalies, 'replace');
+      setStatusMessage({
+        type: 'info',
+        text: `NASA FIRMS LIVE DATA: Ingested ${parsedAnomalies.length} detections. Enriching top anomalies with real OSM Overpass data...`,
+      });
+
+      const osmEnriched = await enrichWithOsm(parsedAnomalies);
+
+      setStatusMessage({
+        type: 'info',
+        text: `NASA FIRMS LIVE DATA: OSM enrichment complete. Fetching real wind data via Open-Meteo...`,
+      });
+
+      const fullyEnriched = await enrichWithWeather(osmEnriched);
+
+      onImportAnomalies(fullyEnriched, 'replace', `NASA FIRMS LIVE (${countryCode} - ${parsedAnomalies.length} detections)`, true);
       setStatusMessage({
         type: 'success',
-        text: `Successfully ingested and classified ${parsedAnomalies.length} live NASA FIRMS thermal anomalies for ${countryCode}!`,
+        text: `NASA FIRMS LIVE DATA: ${parsedAnomalies.length} detections successfully loaded for ${countryCode} with OSM + Open-Meteo weather enrichment.`,
       });
     } catch (err: any) {
-      console.error(err);
+      console.error('FIRMS API Error:', err);
       setStatusMessage({
         type: 'error',
-        text: err.message || 'Error executing NASA FIRMS API request.',
+        text: `NASA FIRMS LIVE DATA UNAVAILABLE: ${err.message || 'Error executing NASA FIRMS API request.'}`,
       });
     } finally {
       setIsLoading(false);
@@ -114,14 +210,14 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const content = event.target?.result as string;
         if (file.name.endsWith('.json') || file.name.endsWith('.geojson')) {
           const json = JSON.parse(content);
           // Handle GeoJSON FeatureCollection
           if (json.type === 'FeatureCollection' && Array.isArray(json.features)) {
-            const parsed: ThermalAnomaly[] = json.features.map((f: any, idx: number) => {
+            let parsed: ThermalAnomaly[] = json.features.map((f: any, idx: number) => {
               const props = f.properties || {};
               const coords = f.geometry?.coordinates || [0, 0];
               return parseFirmsCsvRow(
@@ -134,6 +230,7 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
               );
             }).filter(Boolean);
 
+            parsed = await enrichWithOsm(parsed);
             onImportAnomalies(parsed, 'append');
             setStatusMessage({
               type: 'success',
@@ -144,13 +241,13 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
         }
 
         // Parse CSV
-        const lines = content.split('\n').filter((l) => l.trim().length > 0);
+        const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0);
         if (lines.length > 1) {
-          const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
-          const parsed: ThermalAnomaly[] = [];
+          const headers = splitCsvLine(lines[0]).map((h) => h.toLowerCase());
+          let parsed: ThermalAnomaly[] = [];
 
           for (let i = 1; i < lines.length; i++) {
-            const values = lines[i].split(',').map((v) => v.trim());
+            const values = splitCsvLine(lines[i]);
             const rowObj: Record<string, string> = {};
             headers.forEach((h, idx) => {
               rowObj[h] = values[idx] || '';
@@ -160,10 +257,11 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
             if (anomaly) parsed.push(anomaly);
           }
 
+          parsed = await enrichWithOsm(parsed);
           onImportAnomalies(parsed, 'append');
           setStatusMessage({
             type: 'success',
-            text: `Successfully imported and AI-classified ${parsed.length} anomalies from ${file.name}.`,
+            text: `Successfully imported ${parsed.length} anomalies from ${file.name}.`,
           });
         }
       } catch (err: any) {
@@ -196,12 +294,12 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
           satellite: a.satellite,
           acq_date: a.acq_date,
           acq_time: a.acq_time,
-          facility_name: a.osmProximity.matchedFacilityName,
-          facility_type: a.osmProximity.facilityType,
-          persistence_index: a.persistenceIndex,
+          facility_name: a.osmProximity?.matchedFacilityName || 'Pending OSM Lookup',
+          facility_type: a.osmProximity?.facilityType || 'NONE',
+          persistence_index: a.persistenceIndex ?? 'N/A',
           hazard_level: a.hazardLevel,
-          swir_b12_b11: a.multispectral.swirRatio_B12_B11,
-          plume_length_km: a.plumeDispersion.estimatedPlumeLengthKm,
+          swir_b12_b11: a.multispectral?.swirRatio_B12_B11 ?? 'N/A',
+          plume_length_km: a.plumeDispersion?.estimatedPlumeLengthKm ?? 0,
         },
       })),
     };
@@ -244,10 +342,10 @@ export const DataManagementModal: React.FC<DataManagementModalProps> = ({
       a.satellite,
       a.acq_date,
       a.acq_time,
-      `"${a.osmProximity.matchedFacilityName}"`,
-      a.osmProximity.facilityType,
-      a.osmProximity.distanceMeters,
-      a.persistenceIndex,
+      `"${a.osmProximity?.matchedFacilityName || 'Pending OSM Lookup'}"`,
+      a.osmProximity?.facilityType || 'NONE',
+      a.osmProximity?.distanceMeters ?? -1,
+      a.persistenceIndex ?? 'N/A',
       a.hazardLevel,
     ]);
 

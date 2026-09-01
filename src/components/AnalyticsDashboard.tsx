@@ -52,8 +52,8 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   // Scatter data: Persistence (X) vs FRP (Y) vs Brightness (Z)
   const scatterData = anomalies.map((a) => ({
     id: a.id,
-    name: a.osmProximity.matchedFacilityName,
-    persistence: Number((a.persistenceIndex * 100).toFixed(0)),
+    name: a.osmProximity?.matchedFacilityName || 'Unenriched Detection',
+    persistence: Number(((a.persistenceIndex ?? 0) * 100).toFixed(0)),
     frp: a.frp,
     brightness: a.brightness,
     classification: a.classification,
@@ -111,7 +111,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
               <div className="text-slate-400 font-mono text-[11px] mb-1">Mean 90d Persistence</div>
               <div className="text-2xl font-bold text-amber-400 font-mono">
-                {((anomalies.reduce((s, a) => s + a.persistenceIndex, 0) / anomalies.length) * 100).toFixed(1)}%
+                {anomalies.length > 0 ? `${((anomalies.reduce((s, a) => s + (a.persistenceIndex ?? 0), 0) / anomalies.length) * 100).toFixed(1)}%` : 'N/A'}
               </div>
               <div className="text-[10px] text-slate-400 mt-1">Distinguishes routine vs transient</div>
             </div>
@@ -245,7 +245,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                         className="hover:bg-slate-900/80 cursor-pointer transition"
                       >
                         <td className="py-2.5 text-cyan-400 font-bold">{a.id}</td>
-                        <td className="py-2.5 font-sans font-medium text-slate-200">{a.osmProximity.matchedFacilityName}</td>
+                        <td className="py-2.5 font-sans font-medium text-slate-200">{a.osmProximity?.matchedFacilityName || 'Unenriched Detection'}</td>
                         <td className="py-2.5">
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${meta.badgeBg} ${meta.badgeText}`}>
                             {meta.label.split('/')[0]}
@@ -253,7 +253,7 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                         </td>
                         <td className="py-2.5 text-rose-400 font-bold">{a.frp} MW</td>
                         <td className="py-2.5 text-amber-300">{a.brightness} K</td>
-                        <td className="py-2.5 text-cyan-300">{(a.persistenceIndex * 100).toFixed(0)}%</td>
+                        <td className="py-2.5 text-cyan-300">{a.persistenceIndex && a.persistenceIndex > 0 ? `${(a.persistenceIndex * 100).toFixed(0)}%` : 'N/A'}</td>
                         <td className="py-2.5">
                           <span className={`font-bold ${a.hazardLevel === 'CRITICAL' ? 'text-red-400' : 'text-slate-300'}`}>
                             {a.hazardLevel}

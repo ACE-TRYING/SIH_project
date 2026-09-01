@@ -22,6 +22,7 @@ interface HeaderProps {
   onToggleAnalytics: () => void;
   showAnalytics: boolean;
   activePass: string;
+  isLiveData?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -33,6 +34,7 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleAnalytics,
   showAnalytics,
   activePass,
+  isLiveData = false,
 }) => {
   const criticalCount = anomalies.filter((a) => a.hazardLevel === 'CRITICAL').length;
   const industrialCount = anomalies.filter((a) => a.classification === 'INDUSTRIAL_FIRE').length;
@@ -65,8 +67,22 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Real-time Status Counters */}
+      {/* Real-time Status Counters & Provenance */}
       <div className="hidden lg:flex items-center gap-2 bg-slate-950/80 px-3 py-1.5 rounded-lg border border-slate-800/80 font-mono text-xs">
+        {isLiveData ? (
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <span>● NASA FIRMS — LIVE</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300">
+            <span>● DEMO — MOCK</span>
+          </div>
+        )}
+
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900 text-slate-300">
           <Satellite className="w-3.5 h-3.5 text-cyan-400 animate-spin" style={{ animationDuration: '12s' }} />
           <span className="text-slate-400">Pass:</span>
