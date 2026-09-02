@@ -36,4 +36,9 @@
     "vite": "^6.2.3",
     "@types/express": "^4.17.21"
   }
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --platform=node --packages=external --bundle --format=cjs --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs"
+  }
 }
