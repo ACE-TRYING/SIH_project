@@ -9,6 +9,8 @@ export type FireClassification =
 
 export type HazardLevel = 'CRITICAL' | 'HIGH' | 'MODERATE' | 'LOW';
 
+export type IncidentResponseStatus = 'NEW' | 'ACKNOWLEDGED' | 'ASSIGNED' | 'RESOLVED';
+
 export type FacilityType =
   | 'OIL_REFINERY'
   | 'PETROCHEMICAL'
@@ -46,6 +48,9 @@ export interface ThermalAnomaly {
   historicalDetectionsCount?: number;
   anomalyStatus?: 'NORMAL_ROUTINE' | 'ELEVATED_FLARE' | 'ACCIDENTAL_SPIKE_FIRE' | 'SUB_SURFACE_SMOLDERING' | 'ACTIVE_SPREADING';
   hazardLevel: HazardLevel;
+  responseStatus?: IncidentResponseStatus;
+  assignedAgency?: string;
+  responseNote?: string;
   
   osmProximity?: {
     matchedFacilityName: string;

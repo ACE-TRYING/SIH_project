@@ -1,28 +1,92 @@
 @import "tailwindcss";
 
-/* Leaflet Dark Customizations */
-.leaflet-popup-content-wrapper {
-  background: #0f172a !important;
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --bg-main: #f1f5f9;
+    --bg-surface: #ffffff;
+    --bg-muted: #e2e8f0;
+    --border-color: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #334155;
+    --text-muted: #64748b;
+    --accent-glow: rgba(14, 165, 233, 0.12);
+    --grid-pattern-color: rgba(148, 163, 184, 0.22);
+  }
+
+  .dark {
+    --bg-main: #050a18;
+    --bg-surface: #0b1329;
+    --bg-muted: #13203f;
+    --border-color: #1e2e54;
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+    --accent-glow: rgba(56, 189, 248, 0.18);
+    --grid-pattern-color: rgba(30, 58, 110, 0.35);
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    transition: background-color 0.25s ease, color 0.25s ease;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    min-height: 100vh;
+  }
+}
+
+/* Tactical Background Grid Patterns */
+.bg-tactical-grid {
+  background-image: 
+    linear-gradient(to right, var(--grid-pattern-color) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-pattern-color) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.bg-radial-tactical {
+  background-image: 
+    radial-gradient(circle at 15% 15%, var(--accent-glow) 0%, transparent 45%),
+    radial-gradient(circle at 85% 85%, rgba(245, 158, 11, 0.08) 0%, transparent 40%);
+}
+
+/* Leaflet Customizations - Theme Aware */
+.leaflet-container {
+  background-color: var(--bg-main) !important;
+  font-family: inherit !important;
+}
+
+/* Dark mode popup */
+.dark .leaflet-popup-content-wrapper {
+  background: #0b1329 !important;
   color: #f1f5f9 !important;
-  border: 1px solid #334155 !important;
-  border-radius: 12px !important;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6) !important;
+  border: 1px solid #1e3a6a !important;
+  border-radius: 14px !important;
+  box-shadow: 0 20px 30px -5px rgba(0, 0, 0, 0.8), 0 0 15px rgba(56, 189, 248, 0.2) !important;
   padding: 0 !important;
+}
+.dark .leaflet-popup-tip {
+  background: #0b1329 !important;
+  border: 1px solid #1e3a6a !important;
+}
+
+/* Light mode popup */
+.light .leaflet-popup-content-wrapper, :root:not(.dark) .leaflet-popup-content-wrapper {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 12px 24px -4px rgba(15, 23, 42, 0.12), 0 4px 6px -2px rgba(15, 23, 42, 0.06) !important;
+  padding: 0 !important;
+}
+.light .leaflet-popup-tip, :root:not(.dark) .leaflet-popup-tip {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
 }
 
 .leaflet-popup-content {
   margin: 0 !important;
   line-height: 1.4 !important;
-}
-
-.leaflet-popup-tip {
-  background: #0f172a !important;
-  border: 1px solid #334155 !important;
-}
-
-.leaflet-container {
-  background-color: #020617 !important;
-  font-family: inherit !important;
 }
 
 /* Custom Scrollbars */
@@ -32,11 +96,11 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #020617;
+  background: var(--bg-main);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #64748b;
   border-radius: 4px;
 }
 
@@ -53,3 +117,22 @@
   scrollbar-width: none;
 }
 
+/* Tactical Pulse Animation */
+@keyframes radar-ping {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.7);
+  }
+  70% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 14px rgba(244, 63, 94, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0);
+  }
+}
+
+.animate-radar-ping {
+  animation: radar-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
