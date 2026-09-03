@@ -66,6 +66,49 @@ export interface ClassificationResult {
   evidence: string[];
 }
 
+export interface PriorityScore {
+  score: number;
+  responseWindow: string;
+  factors: string[];
+}
+
+// Operational triage score: deterministic and explainable, not a probability.
+export function calculatePriorityScore(anomaly: Pick<ThermalAnomaly, 'frp' | 'brightness' | 'hazardLevel' | 'persistenceIndex' | 'osmProximity' | 'weather' | 'classification'>): PriorityScore {
+  let score = 10;
+  const factors: string[] = [];
+
+  if (anomaly.hazardLevel === 'CRITICAL') { score += 35; factors.push('Critical hazard classification'); }
+  else if (anomaly.hazardLevel === 'HIGH') { score += 25; factors.push('High hazard classification'); }
+  else if (anomaly.hazardLevel === 'MODERATE') { score += 12; factors.push('Moderate hazard classification'); }
+  if (anomaly.frp >= 150) { score += 25; factors.push(`Extreme FRP (${anomaly.frp.toFixed(1)} MW)`); }
+  else if (anomaly.frp >= 75) { score += 16; factors.push(`Elevated FRP (${anomaly.frp.toFixed(1)} MW)`); }
+  else if (anomaly.frp >= 35) { score += 8; factors.push(`Moderate FRP (${anomaly.frp.toFixed(1)} MW)`); }
+  if (anomaly.brightness >= 380) { score += 12; factors.push(`High brightness (${anomaly.brightness.toFixed(1)} K)`); }
+  else if (anomaly.brightness >= 350) { score += 6; factors.push(`Elevated brightness (${anomaly.brightness.toFixed(1)} K)`); }
+
+  const distance = anomaly.osmProximity?.distanceMeters;
+  if (typeof distance === 'number' && distance >= 0) {
+    if (distance <= 500) { score += 18; factors.push(`Asset proximity (${distance} m)`); }
+    else if (distance <= 3000) { score += 10; factors.push(`Facility buffer proximity (${(distance / 1000).toFixed(1)} km)`); }
+  }
+  if ((anomaly.persistenceIndex ?? 0) >= 0.7) { score += 8; factors.push(`Persistent signal (${((anomaly.persistenceIndex ?? 0) * 100).toFixed(0)}%)`); }
+  if (anomaly.weather?.status === 'REAL' && (anomaly.weather.windSpeedKmh ?? 0) >= 25) {
+    score += 5;
+    factors.push(`Strong wind (${anomaly.weather.windSpeedKmh.toFixed(1)} km/h)`);
+  }
+  if (anomaly.classification === 'INDUSTRIAL_FIRE' || anomaly.classification === 'COAL_MINING_FIRE') {
+    score += 5;
+    factors.push('Industrial or mining incident type');
+  }
+
+  const boundedScore = Math.min(100, score);
+  return {
+    score: boundedScore,
+    responseWindow: boundedScore >= 80 ? 'Immediate: verify within 15 min' : boundedScore >= 60 ? 'Urgent: verify within 60 min' : 'Routine: monitor next pass',
+    factors,
+  };
+}
+
 // Evidence-based rule-based heuristic classification engine
 export function classifyThermalAnomaly(params: {
   frp?: number;
@@ -390,4 +433,111 @@ export function parseFirmsCsvRow(row: Record<string, string>, index: number): Th
     console.error('Error parsing FIRMS row:', err);
     return null;
   }
+}
+
+// Export anomalies as GeoJSON FeatureCollection
+export function exportAnomaliesToGeoJSON(anomalies: ThermalAnomaly[]) {
+  const geojson = {
+    type: 'FeatureCollection',
+    metadata: {
+      generator: 'NTRO ThermalPulse AI Intelligence Platform',
+      exportedAt: new Date().toISOString(),
+      count: anomalies.length,
+    },
+    features: anomalies.map((a) => ({
+      type: 'Feature',
+      geometry: {
+        type: 'Point',
+        coordinates: [a.longitude, a.latitude],
+      },
+      properties: {
+        id: a.id,
+        classification: a.classification,
+        hazardLevel: a.hazardLevel,
+        frp_mw: a.frp,
+        brightness_k: a.brightness,
+        temperature_c: a.brightness ? Math.round(a.brightness - 273.15) : null,
+        satellite: a.satellite,
+        acq_date: a.acq_date,
+        acq_time: a.acq_time,
+        daynight: a.daynight,
+        confidence: a.confidence,
+        matchedFacility: a.osmProximity?.matchedFacilityName || null,
+        distanceToFacilityMeters: a.osmProximity?.distanceMeters ?? null,
+        persistenceIndex: a.persistenceIndex ?? null,
+        responseStatus: a.responseStatus || 'NEW',
+        assignedAgency: a.assignedAgency || null,
+      },
+    })),
+  };
+
+  const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ntro-thermalpulse-${new Date().toISOString().slice(0, 10)}.geojson`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Export anomalies as standard CSV
+export function exportAnomaliesToCSV(anomalies: ThermalAnomaly[]) {
+  const headers = [
+    'ID',
+    'Classification',
+    'HazardLevel',
+    'PriorityScore',
+    'Latitude',
+    'Longitude',
+    'FRP_MW',
+    'Brightness_K',
+    'Temperature_C',
+    'Satellite',
+    'AcquisitionDate',
+    'AcquisitionTime',
+    'DayNight',
+    'Confidence',
+    'MatchedFacility',
+    'DistanceToFacility_m',
+    'PersistenceIndex',
+    'ResponseStatus',
+  ];
+
+  const rows = anomalies.map((a) => {
+    const pScore = calculatePriorityScore(a).score;
+    const tempC = a.brightness ? Math.round(a.brightness - 273.15) : '';
+    return [
+      `"${a.id}"`,
+      `"${a.classification}"`,
+      `"${a.hazardLevel}"`,
+      pScore,
+      a.latitude,
+      a.longitude,
+      a.frp,
+      a.brightness,
+      tempC,
+      `"${a.satellite}"`,
+      `"${a.acq_date}"`,
+      `"${a.acq_time}"`,
+      `"${a.daynight}"`,
+      `"${a.confidence}"`,
+      `"${(a.osmProximity?.matchedFacilityName || '').replace(/"/g, '""')}"`,
+      a.osmProximity?.distanceMeters ?? '',
+      a.persistenceIndex ?? '',
+      `"${a.responseStatus || 'NEW'}"`,
+    ].join(',');
+  });
+
+  const csvContent = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ntro-thermalpulse-report-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

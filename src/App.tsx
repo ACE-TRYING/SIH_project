@@ -8,6 +8,9 @@ import { DataManagementModal } from './components/DataManagementModal';
 import { SimulatePassModal } from './components/SimulatePassModal';
 import { SegregationMatrixModal } from './components/SegregationMatrixModal';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
+import { Footer } from './components/Footer';
+import { HeroSection } from './components/HeroSection';
+import { FeatureOverview } from './components/FeatureOverview';
 import { 
   INITIAL_THERMAL_ANOMALIES, 
   STRATEGIC_FACILITIES 
@@ -16,7 +19,7 @@ import {
   ThermalAnomaly, 
   IndustrialFacility, 
   GISFilterState, 
-  MapLayerControls, 
+  MapLayerControls,
   FireClassification 
 } from './types';
 
@@ -42,7 +45,7 @@ const INITIAL_FILTERS: GISFilterState = {
 };
 
 const INITIAL_LAYER_CONTROLS: MapLayerControls = {
-  baseLayer: 'satellite',
+  baseLayer: 'dark',
   showHeatmap: false,
   showBufferZones: true,
   showOsmFacilities: true,
@@ -71,6 +74,7 @@ export default function App() {
   const [isAnalyzingAnomaly, setIsAnalyzingAnomaly] = useState<boolean>(false);
   const [activePass, setActivePass] = useState<string>('VIIRS NOAA-20 (14:22 UTC)');
   const [isLiveData, setIsLiveData] = useState<boolean>(false);
+  const [focusMode, setFocusMode] = useState<boolean>(false);
 
   // Filtered Anomalies
   const filteredAnomalies = useMemo(() => {
@@ -80,6 +84,18 @@ export default function App() {
 
       // FRP range
       if (a.frp < filters.minFrp) return false;
+      if (a.frp > filters.maxFrp) return false;
+
+      if (!filters.hazardLevels.includes(a.hazardLevel)) return false;
+      if (filters.satellite !== 'ALL' && a.satellite !== filters.satellite) return false;
+      if (filters.facilityType !== 'ALL' && a.osmProximity?.facilityType !== filters.facilityType) return false;
+
+      if (filters.datePreset !== 'all') {
+        const acquisition = new Date(`${a.acq_date}T00:00:00Z`).getTime();
+        const now = Date.now();
+        const days = filters.datePreset === 'today' ? 1 : filters.datePreset === '7days' ? 7 : 30;
+        if (!Number.isFinite(acquisition) || acquisition < now - days * 24 * 60 * 60 * 1000) return false;
+      }
 
       // Persistence
       if ((a.persistenceIndex ?? 0) < filters.minPersistence) return false;
@@ -132,6 +148,11 @@ export default function App() {
   const handleSelectAnomaly = (anomaly: ThermalAnomaly) => {
     setSelectedAnomaly(anomaly);
     setSelectedFacility(null);
+  };
+
+  const handleUpdateIncident = (id: string, updates: Partial<ThermalAnomaly>) => {
+    setAnomalies((prev) => prev.map((a) => (a.id === id ? { ...a, ...updates } : a)));
+    setSelectedAnomaly((prev) => (prev?.id === id ? { ...prev, ...updates } : prev));
   };
 
   // Run Gemini Analysis for selected anomaly
@@ -193,8 +214,8 @@ export default function App() {
     setIsLiveData(false);
     if (scenarioType === 'JAMNAGAR_SPIKE') {
       setActivePass('VIIRS NOAA-20 (NIGHT PASS + SPIKE)');
-      setAnomalies((prev) =>
-        prev.map((a) => {
+      setAnomalies((prev) => {
+        const updated = prev.map((a) => {
           if (a.id === 'firms-ind-001') {
             return {
               ...a,
@@ -215,11 +236,11 @@ export default function App() {
             };
           }
           return a;
-        })
-      );
-      // Auto-select Jamnagar
-      const jamnagar = anomalies.find((a) => a.id === 'firms-ind-001');
-      if (jamnagar) setSelectedAnomaly(jamnagar);
+        });
+        const jamnagar = updated.find((a) => a.id === 'firms-ind-001');
+        if (jamnagar) setSelectedAnomaly(jamnagar);
+        return updated;
+      });
     } else if (scenarioType === 'JHARIA_EXPANSION') {
       setActivePass('VIIRS S-NPP (COAL BASIN OVERPASS)');
       const jharia = anomalies.find((a) => a.id === 'firms-ind-004');
@@ -234,8 +255,22 @@ export default function App() {
     }
   };
 
+  const handleQuickFilter = (classification?: FireClassification, hazardOnly?: boolean) => {
+    if (classification) {
+      setFilters({
+        ...INITIAL_FILTERS,
+        classifications: [classification],
+      });
+    } else if (hazardOnly) {
+      setFilters({
+        ...INITIAL_FILTERS,
+        hazardLevels: ['CRITICAL'],
+      });
+    }
+  };
+
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans select-none">
+    <div className="flex min-h-screen w-full flex-col bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 overflow-x-hidden font-sans transition-colors duration-200 bg-radial-tactical">
       {/* Top Intelligence Header */}
       <Header
         anomalies={anomalies}
@@ -247,23 +282,53 @@ export default function App() {
         showAnalytics={showAnalytics}
         activePass={activePass}
         isLiveData={isLiveData}
+        onQuickFilter={handleQuickFilter}
+        onInjectScenario={handleInjectScenario}
+      />
+
+      <HeroSection
+        anomalies={anomalies}
+        isLiveData={isLiveData}
+        onOpenSimulatePass={() => setShowSimulatePass(true)}
+        onOpenTacticalBrief={() => setShowTacticalBrief(true)}
+        onQuickFilter={handleQuickFilter}
+      />
+
+      <FeatureOverview
+        onOpenDataManagement={() => setShowDataManagement(true)}
+        onOpenSegregationMatrix={() => setShowSegregationMatrix(true)}
       />
 
       {/* Main Workspace (Sidebar + GIS Map) */}
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+      <section id="workspace" className="border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-950/70 px-4 py-12 sm:px-6 lg:px-8 bg-tactical-grid transition-colors duration-200">
+        <div className="mx-auto max-w-[1800px]">
+          <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="text-xs font-mono font-bold uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-400">Live operations workspace</div>
+              <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-950 dark:text-white sm:text-3xl">Monitor the national thermal picture</h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-400">Use the map and incident queue below to inspect signals, compare risk, and open evidence-backed response actions.</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 px-3.5 py-2 text-xs font-mono text-slate-600 dark:text-slate-300 shadow-sm backdrop-blur">
+              Click an incident or corridor to inspect evidence & AI diagnostics
+            </div>
+          </div>
+          <div className="flex h-[740px] flex-col overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shadow-2xl lg:h-[800px] md:flex-row backdrop-blur">
         {/* Left Side Filter & Telemetry Dock */}
-        <ControlPanel
-          filters={filters}
-          onUpdateFilters={handleUpdateFilters}
-          onResetFilters={handleResetFilters}
-          anomalies={anomalies}
-          filteredAnomalies={filteredAnomalies}
-          selectedAnomaly={selectedAnomaly}
-          onSelectAnomaly={handleSelectAnomaly}
-          facilities={facilities}
-          selectedFacility={selectedFacility}
-          onSelectFacility={handleSelectFacility}
-        />
+        {!focusMode && (
+          <ControlPanel
+            filters={filters}
+            onUpdateFilters={handleUpdateFilters}
+            onResetFilters={handleResetFilters}
+            anomalies={anomalies}
+            filteredAnomalies={filteredAnomalies}
+            selectedAnomaly={selectedAnomaly}
+            onSelectAnomaly={handleSelectAnomaly}
+            facilities={facilities}
+            selectedFacility={selectedFacility}
+            onSelectFacility={handleSelectFacility}
+            onUpdateIncident={handleUpdateIncident}
+          />
+        )}
 
         {/* Center/Right Leaflet GIS Map Canvas */}
         <div className="flex-1 relative h-full">
@@ -275,9 +340,15 @@ export default function App() {
             layerControls={layerControls}
             onUpdateLayerControls={handleUpdateLayerControls}
             selectedFacility={selectedFacility}
+            focusMode={focusMode}
+            onToggleFocusMode={() => setFocusMode((current) => !current)}
           />
         </div>
       </div>
+        </div>
+      </section>
+
+      <Footer anomalies={anomalies} activePass={activePass} isLiveData={isLiveData} />
 
       {/* In-depth Anomaly Detail Inspection Drawer */}
       {selectedAnomaly && (
@@ -286,6 +357,7 @@ export default function App() {
           onClose={() => setSelectedAnomaly(null)}
           onRunGeminiAnalysis={handleRunGeminiAnalysis}
           isAnalyzing={isAnalyzingAnomaly}
+          onUpdateIncident={handleUpdateIncident}
         />
       )}
 
